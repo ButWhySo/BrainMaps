@@ -1,0 +1,192 @@
+# Room 9: GRPO, dropping the critic
+1. Where this room starts, and what it must answer
+Course slides 23 to 26. Paper: Shao et al. 2024, DeepSeekMath, section 4.1.
+Room 8 ended with PPO, proximal policy optimisation (the standard RLHF training rule). PPO keeps four full-size networks in memory. One of them, the value model (also called the critic: a network that predicts, at every token, how much reward the answer will end up with), exists only to produce a baseline (a reference score that tells us what reward was expected anyway).
+GRPO, group relative policy optimisation, removes that network. It asks the same prompt several times and uses the other answers as the baseline.
+
+Questions this room answers, in order:
+ Q1 What does the critic do in PPO, and what does it cost?
+ Q2 How does GRPO get an advantage with no critic?
+ Q3 What does each term of the GRPO objective do?
+ Q4 Why is there a ratio and a clip in it?
+ Q5 What is the k3 KL estimator and why is it used?
+ Q6 When does a group teach nothing?
+ Q7 Which three choices in the objective cause trouble later?
+====
+2. The one rule every method here shares
+All policy-gradient methods (methods that change the weights in the direction that makes rewarded outputs more likely) apply the same update to each token the model wrote:
+
+ change in weights  =  step size  x  advantage  x  gradient of log-probability of that token
+
+Advantage (how much better the outcome was than expected) decides the direction:
+ advantage > 0  the token is made more likely
+ advantage < 0  the token is made less likely
+ advantage = 0  nothing changes
+
+So a method is defined by two choices: how it computes the advantage, and how it limits the step. PPO computes the advantage from the critic. GRPO computes it from a group of answers. The step limit (the clip) is the same in both.
+====
+@table 3. Why remove the critic (slide 24, left card)
+Reason on the slide | What it means | Size of the problem
+A critic as large as the policy doubles memory | the value model is a second LLM of the same size, and it is trained too | about 2x memory and compute for the trainable part
+Value estimates over long chains of thought are unstable | the critic must guess the final reward thousands of tokens before the answer appears | a wrong guess gives a wrong advantage for every token after it
+More parameters and hyperparameters | the critic adds its own loss weight c1, its own warm-up, and the GAE settings gamma and lambda | each one must be tuned
+====
+@img2 4. The GRPO pipeline (slide 24 diagram, drawn as in the RLHF Book) and how to read it
+grpo_tikz.png
+q is the prompt. o_i is the i-th answer (o for output), i runs from 1 to G, and G is the group size. r_i is the reward of answer i. The group-normalisation box turns the G rewards into G advantages. Two things differ from the PPO picture in Room 8: there is no value model box, and the KL term (the cost for drifting away from the frozen reference model) is added to the loss instead of being subtracted from the reward. Lambert, RLHF Book, Ch. 6, CC BY-NC-SA.
+====
+@anat2 5. The group advantage, term by term
+Each answer is graded against the other answers to the same prompt. The slide calls this grading on a curve.
+$$ \hat{A}_i || ADVANTAGE of answer i. The hat means it is an estimate. Positive: better than the group. Negative: worse.
+$$ \;=\;\big(\,
+$$ r_i || REWARD of answer i. From a verifier it is 1 (correct) or 0 (wrong). From a reward model it is any real number.
+$$ \;-\;\mathrm{mean}(r_1,\ldots,r_G) || BASELINE. The average reward of the G answers. Subtracting it answers: was this answer better than a typical one for this prompt?
+$$ \,\big)\;\Big/\;\big(\,
+$$ \mathrm{std}(r_1,\ldots,r_G) || SCALE. Standard deviation (how spread out the rewards are). Dividing by it gives every prompt advantages of similar size. Room 10 shows the harm this does.
+$$ \;+\;\epsilon || SAFETY. A tiny number such as 0.000001 that prevents division by zero. It is not the clip range, which uses the same letter.
+$$ \,\big)
+--
+Every token of answer i receives this same number. GRPO has no way to say which token inside the answer earned the reward. PPO's critic could, GRPO gives that up.
+The std here is the population standard deviation: divide by G, not by G - 1.
+====
+@table 6. Worked example from slide 25: prompt "What is 2 + 2?", G = 4
+Step | Answer 1: "4" | Answer 2: "It is 5." | Answer 3: "2 + 2 = 4, so 4." | Answer 4: "22"
+Reward r_i from the verifier | 1 | 0 | 1 | 0
+Mean = (1 + 0 + 1 + 0) / 4 | 0.5 | 0.5 | 0.5 | 0.5
+r_i - mean | +0.5 | -0.5 | +0.5 | -0.5
+(r_i - mean) squared | 0.25 | 0.25 | 0.25 | 0.25
+Variance = (0.25 x 4) / 4 = 0.25, std = sqrt(0.25) | 0.5 | 0.5 | 0.5 | 0.5
+Advantage = (r_i - mean) / std | +1.0 | -1.0 | +1.0 | -1.0
+Effect on the answer | every token pushed up | every token pushed down | every token pushed up | every token pushed down
+====
+7. When a group teaches nothing (slide 25, right table)
+Prompt too easy: the four answers are "4", "4.", "Four", "2+2=4". All rewards are 1.
+ mean = 1, every r_i - mean = 0, std = 0, every advantage = 0 / (0 + epsilon) = 0.
+Zero advantage means zero gradient. The four generations cost compute and changed nothing. The same happens when all four are wrong.
+
+How often does this happen? Let p be the pass rate (the chance that one sampled answer is correct). A group is useful only if it contains at least one right and one wrong answer:
+ P(useful) = 1 - p^G - (1 - p)^G
+ p = 0.5, G = 4:   1 - 0.0625 - 0.0625 = 0.875
+ p = 0.9, G = 4:   1 - 0.6561 - 0.0001 = 0.344
+ p = 0.9, G = 8:   1 - 0.4305 - 0.0000 = 0.570
+ p = 0.9, G = 16:  1 - 0.1853 - 0.0000 = 0.815
+As training improves the model, p rises for most prompts and the share of useful groups falls. Room 10, problem 3, fixes this.
+
+Slide question: what happens with G = 2?
+With 0/1 rewards there are three cases. (1,1) and (0,0) give advantages 0, 0. (1,0) gives mean 0.5, std 0.5, advantages +1, -1. The advantage can only be +1, -1 or 0, and at p = 0.9 only 1 - 0.81 - 0.01 = 18 percent of groups are useful. This is why G is set between 8 and 64.
+====
+8. Why a ratio appears in the objective
+The G answers are sampled once, with the weights the model had at that moment. Call that frozen snapshot pi_old (the old policy). GRPO then takes several gradient steps on the same batch. After the first step the weights have moved, so the answers no longer come from the current policy pi_theta (theta is the full set of current weights).
+Room 6 gave the correction: weight each sample by how much more likely the current policy finds it than the policy that produced it.
+
+ ratio r_(i,t)(theta) = pi_theta(token t of answer i | prompt and earlier tokens) / pi_old(same token | same context)
+
+ Example: at sampling time the token had probability 0.30. After one update it has 0.36.
+ ratio = 0.36 / 0.30 = 1.2. The token is now 20 percent more likely.
+ ratio = 1 exactly at the first step, because pi_theta still equals pi_old.
+
+Two letters r are in use. r_i with one index is a reward. r_(i,t)(theta) with two indices and theta is a probability ratio. The papers use both, so the board keeps both and always writes the indices.
+====
+@anat3 9. The full GRPO objective, term by term (slide 26, DeepSeekMath equation 3)
+The objective is a number computed from one batch. Training changes the weights to make it larger.
+$$ \mathcal{J}_{GRPO}(\theta)= || OBJECTIVE. J is the number to maximise, theta the weights being trained. The loss given to the optimiser is minus J.
+$$ \;\mathbb{E}_{q,\,\{o_i\}\sim\pi_{\theta_{old}}} || EXPECTATION. Average over prompts q from the dataset and over groups of answers sampled by the old policy. In code: the mean over the batch.
+$$ \;\frac{1}{G}\sum_{i=1}^{G} || GROUP AVERAGE. Add up over the G answers to one prompt and divide by G. Every answer counts equally.
+$$ \;\frac{1}{|o_i|}\sum_{t=1}^{|o_i|} || TOKEN AVERAGE. |o_i| is the number of tokens in answer i, t counts tokens. Dividing by the answer's own length is the source of the length bias in Room 10.
+$$ \Big\{\min\Big[\,r_{i,t}(\theta)\,\hat{A}_{i,t}, || PLAIN TERM. Ratio times advantage. Raising the probability of a token with positive advantage raises this. A_(i,t) equals A_i for every t.
+$$ \;\mathrm{clip}\big(r_{i,t}(\theta),1-\epsilon,1+\epsilon\big)\hat{A}_{i,t}\Big] || CLIPPED TERM. The ratio is forced into the range 1 - epsilon to 1 + epsilon, which is 0.8 to 1.2 for epsilon = 0.2. min keeps the smaller of the two terms.
+$$ \;-\;\beta\,\mathbb{D}_{KL}\big[\pi_\theta\,\|\,\pi_{ref}\big]\Big\} || KL PENALTY. beta is its weight (0.04 in DeepSeekMath, 0 in many later recipes). D_KL measures how far the current policy is from the frozen reference model.
+--
+Reading order: inside the braces is the score of one token. The token average turns it into the score of one answer. The group average turns that into the score of one prompt. The expectation averages over prompts.
+====
+@table 10. What min and clip do, case by case (epsilon = 0.2)
+Ratio | Advantage | Plain term | Clipped term | min keeps | Gradient | Meaning
+1.3 | +1 | 1.3 | 1.2 | 1.2 (a constant) | zero | a good token already rose by more than 20 percent, stop pushing
+0.7 | +1 | 0.7 | 0.8 | 0.7 | live | a good token became less likely, pull it back up
+1.3 | -1 | -1.3 | -1.2 | -1.3 | live | a bad token became more likely, push it down
+0.7 | -1 | -0.7 | -0.8 | -0.8 (a constant) | zero | a bad token already fell by more than 20 percent, stop pushing
+1.1 | +1 | 1.1 | 1.1 | 1.1 | live | inside the range, normal update
+====
+11. The objective computed by hand on a tiny batch
+One prompt, G = 2, beta = 0, epsilon = 0.2.
+ Answer 1: 2 tokens, advantage +1, ratios 1.1 and 1.3.
+ Answer 2: 4 tokens, advantage -1, ratios 1.0, 1.0, 1.0, 1.0.
+
+ Answer 1, token 1: min(1.1 x 1, clip(1.1) x 1) = min(1.1, 1.1) = 1.1
+ Answer 1, token 2: min(1.3 x 1, clip(1.3) x 1) = min(1.3, 1.2) = 1.2
+ Token average for answer 1: (1.1 + 1.2) / 2 = 1.15
+
+ Answer 2, each token: min(1.0 x -1, 1.0 x -1) = -1.0
+ Token average for answer 2: (-1 - 1 - 1 - 1) / 4 = -1.0
+
+ Group average: (1.15 + (-1.0)) / 2 = 0.075
+
+J = 0.075 for this prompt. The gradient step raises it by increasing the probabilities of answer 1's first token (the second is clipped) and decreasing the probabilities of all four tokens of answer 2.
+====
+@anat2 12. The KL term and the k3 estimator
+The exact KL divergence (a measure of how different two probability distributions are, zero when they are equal) needs a sum over the whole vocabulary at every token. GRPO estimates it from the one token that was sampled.
+$$ \hat{\mathbb{D}}_{KL}\;=\; || ESTIMATE of the KL divergence at one token position, from one sampled token.
+$$ \dfrac{\pi_{ref}(o_{i,t})}{\pi_\theta(o_{i,t})} || RATIO rho. Probability the frozen reference gives the sampled token, divided by the probability the current policy gives it.
+$$ \;-\;\log\dfrac{\pi_{ref}(o_{i,t})}{\pi_\theta(o_{i,t})} || LOG TERM. Minus log rho equals log pi_theta minus log pi_ref. Its average over samples is exactly the KL divergence.
+$$ \;-\;1 || CORRECTION. rho - 1 has average zero, so adding it changes no average, and it makes every single sample non-negative.
+--
+Numbers: rho = 1 gives 1 - 0 - 1 = 0. rho = 0.5 gives 0.5 + 0.693 - 1 = 0.193. rho = 2 gives 2 - 0.693 - 1 = 0.307.
+Why never negative: rho - 1 is always at least log rho. Why unbiased (correct on average): the average of rho over tokens sampled from pi_theta is the sum over tokens of pi_theta x pi_ref / pi_theta = sum of pi_ref = 1, so rho - 1 averages to 0.
+Compare Room 8: PPO used only log pi_theta - log pi_ref per token, which can be negative for one sample. k3 is the name of this estimator in Schulman's 2020 note "Approximating KL divergence".
+====
+@table 13. Typical settings (slide 26, middle card)
+Setting | Typical value | What it controls | Note
+G, group size | 8 to 64 | how many answers per prompt | larger G gives a steadier baseline and more useful groups, and costs more generation
+epsilon, clip range | 0.2 | how far a token probability may move before its push stops | ratio kept within 0.8 to 1.2
+Learning rate | about 0.000001 | step size | small, because the model starts from a strong checkpoint
+beta, KL weight | 0.04 in DeepSeekMath, 0 in DAPO, Dr. GRPO, Open-Reasoner-Zero | how strongly the policy is tied to the reference | 0 when the reward is a verifier: it is hard to cheat, and reasoning needs the model to move far from the base
+Updates per batch | a few | how many gradient steps reuse one batch of samples | more steps make the ratio drift from 1
+====
+@code 14. One GRPO iteration in order (DeepSeekMath, Algorithm 1)
+for batch in dataset:                        # a batch of prompts q
+    pi_old = copy_of(policy)                 # freeze the weights used for sampling
+    answers = sample(pi_old, batch, G)       # G answers per prompt
+    r = reward(answers)                      # verifier or reward model, shape [prompts, G]
+    A = (r - r.mean(1)) / (r.std(1) + 1e-6)  # group advantage, one number per answer
+    logp_old = token_logprobs(pi_old, answers)
+    for step in range(mu):                   # mu gradient steps on the same batch
+        logp = token_logprobs(policy, answers)
+        ratio = exp(logp - logp_old)         # r_(i,t)(theta), one per token
+        plain = ratio * A[..., None]         # same A for every token of an answer
+        clipped = clamp(ratio, 0.8, 1.2) * A[..., None]
+        per_token = minimum(plain, clipped) - beta * k3_kl(policy, reference, answers)
+        per_answer = (per_token * mask).sum(-1) / mask.sum(-1)   # the 1/|o_i| average
+        loss = -per_answer.mean()            # 1/G and batch average, minus sign: maximise J
+        loss.backward(); optimizer.step(); optimizer.zero_grad()
+====
+@table 15. PPO and GRPO side by side
+ | PPO (Room 8) | GRPO
+Networks in memory | policy, reference, reward model, value model | policy, reference, reward model or verifier
+Advantage comes from | critic values through GAE, one per token | group mean and std, one per answer
+Credit inside an answer | different tokens can get different advantages | all tokens of an answer get the same advantage
+KL penalty | subtracted from the reward | added to the loss, k3 estimator
+Samples per prompt | 1 is enough | G, at least 2, usually 8 to 64
+Step limit | clipped ratio | the same clipped ratio
+View of the answer | token view | bandit view (the whole answer is one action with one reward)
+====
+@table 16. Three choices that later methods change (slide 26, right card)
+Choice in the objective | Where it sits | What goes wrong | Changed by
+1 / len(o_i) length normalisation | the token average | long wrong answers are punished less per token | Dr. GRPO, DAPO
+Division by std | the advantage | prompts with nearly identical rewards get the largest pushes | Dr. GRPO
+Token-level ratios | r_(i,t)(theta) and its clip | single tokens with extreme ratios add noise | GSPO, CISPO, SAPO
+====
+@qa 17. The seven questions, answered
+Q1 What does the critic do in PPO, and what does it cost?
+A: It predicts the expected reward at every token so that an advantage can be computed. It is a second trainable LLM: about twice the memory and compute, plus its own tuning.
+Q2 How does GRPO get an advantage with no critic?
+A: It samples G answers to the same prompt and uses (reward - group mean) / group std.
+Q3 What does each term of the objective do?
+A: Expectation: batch mean. 1/G sum: average over answers. 1/|o_i| sum: average over tokens. min of plain and clipped ratio x advantage: the limited policy-gradient push. beta x KL: cost for leaving the reference.
+Q4 Why a ratio and a clip?
+A: The batch is reused for several steps, so samples come from pi_old. The ratio corrects for that. The clip stops the push on a token once its probability has moved 20 percent in the helpful direction.
+Q5 What is k3?
+A: rho - log rho - 1 with rho = pi_ref / pi_theta on the sampled token. Unbiased, low variance, never negative.
+Q6 When does a group teach nothing?
+A: When all G rewards are equal. Chance of a useful group: 1 - p^G - (1 - p)^G.
+Q7 Which three choices cause trouble?
+A: 1/|o_i|, division by std, and token-level ratios. Room 10 takes them one at a time.

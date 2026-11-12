@@ -1,0 +1,261 @@
+# Room 10: What breaks in GRPO, and the 2025 fixes
+1. Where this room starts, and what it must answer
+Course slides 27 to 36. Papers: Liu et al. 2025 (Dr. GRPO, "Understanding R1-Zero-Like Training"), Yu et al. 2025 (DAPO), Zheng et al. 2025 (GSPO), Shao et al. 2024 (DeepSeekMath).
+Room 9 built the GRPO objective and marked three of its choices as trouble. During 2025, six separate failures of that objective were measured in real training runs. Each one comes from one identifiable term, and each fix changes exactly that term.
+
+Every problem below is taught in the same order: the term responsible, the mechanism, the slide's numbers worked in full, the formula before and after the fix, and what the fix costs.
+
+Questions this room answers:
+ Q1 Which term of the objective causes each of the six problems?
+ Q2 Why does dividing by an answer's own length reward rambling when wrong?
+ Q3 Why does dividing by the group std favour near-unanimous prompts?
+ Q4 What share of generation is wasted on all-equal groups, and how is that avoided?
+ Q5 Why can a rare token not grow under the clip, and what does clip-higher change?
+ Q6 Why is one ratio per answer steadier than one ratio per token?
+ Q7 Why is a cut-off answer a noisy training signal?
+ Q8 What exactly does DAPO change in the objective, and what did each change add?
+====
+@anat3 2. The GRPO objective again, with the cause of each problem marked
+This is the objective from Room 9. The label under each term names the problem that term causes.
+$$ \mathcal{J}_{GRPO}(\theta)=\mathbb{E}\;\frac{1}{G}\sum_{i=1}^{G}
+$$ \;\frac{1}{|o_i|}\sum_{t=1}^{|o_i|} || PROBLEM 1, LENGTH BIAS. Each answer's sum over tokens is divided by its own length |o_i|. A long answer spreads the same advantage over more tokens.
+$$ \min\Big[\,r_{i,t}(\theta) || PROBLEM 5, NOISY TOKEN RATIOS. One ratio per token. A single token whose probability jumped gives an extreme ratio.
+$$ \;\hat{A}_{i} || PROBLEMS 2, 3 AND 6. The advantage divides by the group std (problem 2), is zero when all rewards are equal (problem 3), and inherits a reward of 0 from answers cut off at the length limit (problem 6).
+$$ ,\;\mathrm{clip}\big(r_{i,t}(\theta),\,1-\epsilon,
+$$ \;1+\epsilon\big) || PROBLEM 4, ENTROPY COLLAPSE. The upper limit 1 + epsilon lets a token grow by at most 20 percent of its own probability per batch. For a rare token that is almost nothing.
+$$ \,\hat{A}_{i}\Big]
+--
+The KL term is left out here because the recipes in this room set beta = 0: with a verifier as reward there is little to cheat, and reasoning training needs the model to move far from its starting point.
+====
+@table 3. The six problems at a glance (slide 27)
+Number | Problem | Term responsible | Visible symptom in a training run | Fixed by
+1 | Length bias | 1 / len(o_i) | wrong answers grow longer and longer | Dr. GRPO, DAPO token-level loss
+2 | Difficulty bias | division by std | very easy and very hard prompts dominate the update | Dr. GRPO
+3 | Zero-advantage groups | r_i - mean = 0 for every answer | the useful part of each batch keeps shrinking | DAPO dynamic sampling
+4 | Entropy collapse | upper clip 1 + epsilon | all G samples look alike, pass@k stops rising | DAPO clip-higher, CISPO
+5 | Noisy token ratios | one ratio per token | unstable loss, worst in mixture-of-experts models | GSPO
+6 | Truncation noise | reward 0 at the length limit | the model learns to avoid long reasoning | DAPO overlong shaping
+====
+4. Problem 1, length bias: the mechanism
+The token average gives every token of answer i the weight 1 / |o_i|. The push on one token is therefore
+
+ push per token = advantage of the answer / number of tokens in the answer
+
+Take two wrong answers to the same prompt, both with advantage -1.
+ Short wrong answer, 10 tokens:   each token is pushed by -1 / 10  = -0.10
+ Long wrong answer, 100 tokens:   each token is pushed by -1 / 100 = -0.01
+
+A token inside the long wrong answer is discouraged ten times less. The model decides token by token whether to keep writing, and continuing a wrong answer costs almost nothing per token, so over many updates wrong answers drift longer. For correct answers the sign flips: a short correct answer gets +0.10 per token and a long correct one +0.01, so correct answers drift shorter.
+
+Measured result in the Dr. GRPO paper: accuracy rises during training while the average length of wrong answers keeps growing.
+====
+@table 5. Problem 1: the slide's four answers, before and after the fix (slide 28)
+Answer | Tokens | Advantage | Before: push per token = A / own length | Before: total push on the answer | After: push per token = A / 100 | After: total push on the answer
+Short, correct | 10 | +1 | +1/10 = +0.10 | 10 x 0.10 = +1.0 | +0.01 | 10 x 0.01 = +0.1
+Long, correct | 100 | +1 | +1/100 = +0.01 | 100 x 0.01 = +1.0 | +0.01 | 100 x 0.01 = +1.0
+Short, wrong | 10 | -1 | -1/10 = -0.10 | -1.0 | -0.01 | 10 x -0.01 = -0.1
+Long, wrong | 100 | -1 | -1/100 = -0.01 | -1.0 | -0.01 | 100 x -0.01 = -1.0
+What to read off | | | per-token push differs by a factor of 10 | every answer gets the same total, whatever its length | every token gets the same push | a long wrong answer now collects 10 times the penalty of a short one
+====
+@math 6. Problem 1: the formula before and after
+Before (GRPO). Each answer is averaged over its own length:
+$ \frac{1}{G}\sum_{i=1}^{G}\;\frac{1}{|o_i|}\sum_{t=1}^{|o_i|}\big(\cdots\big)
+After, Dr. GRPO. One fixed constant for all answers, such as the maximum generation length:
+$ \frac{1}{G}\sum_{i=1}^{G}\;\frac{1}{L_{max}}\sum_{t=1}^{|o_i|}\big(\cdots\big)
+After, DAPO token-level loss. Add up all tokens of all G answers, divide once by the total token count:
+$ \frac{1}{\sum_{i=1}^{G}|o_i|}\;\sum_{i=1}^{G}\sum_{t=1}^{|o_i|}\big(\cdots\big)
+Why the constant is the correct choice and not only a patch: the probability of a whole answer is the product of its token probabilities, so the gradient of its log-probability is the SUM over its tokens. The policy gradient is advantage times that sum. Dividing by |o_i| multiplies each answer's gradient by a different number, which changes what is being optimised.
+In code the change is one line. Before: (loss * mask).sum(-1) / mask.sum(-1). After: (loss * mask).sum(-1) / MAX_TOKENS.
+DAPO states its own reason for the same change: with per-answer averaging, tokens of long answers count less, so good long reasoning is learned slowly and long low-quality patterns such as repetition are punished weakly.
+
+Slide question: does the constant affect anything besides length bias?
+It rescales the whole gradient, so it acts like a change of learning rate. A larger constant means smaller steps, and the step size has to be tuned together with it.
+====
+7. Problem 2, difficulty bias: the mechanism
+The advantage divides (reward - mean) by the group's standard deviation. A group whose rewards are nearly identical has a std close to zero, and dividing by a number close to zero makes the result large. Every group ends up with advantages of about the same size, however small the real differences were.
+
+Two consequences:
+ - With a reward model (continuous scores), a difference that is only scoring noise is blown up to a full-size push.
+ - With 0/1 rewards, a group that is almost all right or almost all wrong has a small std, so its one odd answer gets a very large advantage. Prompts that are too easy or too hard for the current model end up weighted more than prompts of medium difficulty.
+
+Normalising advantages is a standard RL habit, but it is normally done over a whole batch. GRPO does it per prompt, so each prompt gets a different multiplier.
+====
+@table 8. Problem 2: the slide's two prompts, worked in full (slide 29)
+Step | Prompt A: a real difference | Prompt B: nearly identical scores
+Rewards | 0, 1, 0, 1 | 0.80, 0.81, 0.79, 0.80
+Mean | (0+1+0+1)/4 = 0.5 | (0.80+0.81+0.79+0.80)/4 = 0.80
+r - mean | -0.5, +0.5, -0.5, +0.5 | 0, +0.01, -0.01, 0
+Squares | 0.25, 0.25, 0.25, 0.25 | 0, 0.0001, 0.0001, 0
+Variance = mean of squares | 0.25 | 0.0002 / 4 = 0.00005
+Std = square root | 0.5 | 0.00707
+Before: (r - mean) / std | -1, +1, -1, +1 | 0, +1.41, -1.41, 0
+After (Dr. GRPO): r - mean | -0.5, +0.5, -0.5, +0.5 | 0, +0.01, -0.01, 0
+Reading | a true right-versus-wrong gap gets pushes of size 1 | a 0.01 gap, likely noise, gets pushes of size 1.41 before the fix and 0.01 after
+====
+9. Problem 2 with 0/1 rewards, and the fix
+Group of G = 8 with 7 correct and 1 wrong.
+ mean = 7/8 = 0.875
+ variance = p(1 - p) for 0/1 rewards = 0.875 x 0.125 = 0.109
+ std = sqrt(0.109) = 0.331
+ advantage of the wrong answer   = (0 - 0.875) / 0.331 = -2.65
+ advantage of each correct answer = (1 - 0.875) / 0.331 = +0.38
+
+Compare a half-right group (4 correct, 4 wrong): advantages +1 and -1. The single wrong answer on an easy prompt is pushed 2.65 times harder than a wrong answer on a medium prompt.
+
+General formula for the one correct answer when the pass rate is p: advantage = sqrt((1 - p) / p). The chart beside this block plots it.
+
+Fix, Dr. GRPO: advantage = r_i - mean(r). No division.
+Cost of the fix: groups with a large spread of rewards now dominate the update. REINFORCE++ keeps a division but uses the std of the whole batch, which gives one common scale without magnifying near-identical groups.
+====
+@xy 10. Problem 2: advantage of a lone correct answer against pass rate
+xychart-beta
+    title "Advantage = sqrt((1-p)/p): hard prompts shout, medium prompts speak normally"
+    x-axis "pass rate p" [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99]
+    y-axis "advantage" 0 --> 10
+    line [9.95, 4.36, 3.0, 1.73, 1.0, 0.58, 0.33, 0.10]
+====
+@table 11. Problem 3, zero-advantage groups (slide 30)
+Group | Rewards, G = 4 | Mean | r - mean | Learning signal
+Easy prompt | 1, 1, 1, 1 | 1.0 | 0, 0, 0, 0 | none
+Too-hard prompt | 0, 0, 0, 0 | 0.0 | 0, 0, 0, 0 | none
+Useful prompt | 1, 0, 1, 0 | 0.5 | +0.5, -0.5, +0.5, -0.5, then divided by std 0.5: +1, -1, +1, -1 | yes
+====
+@anat 12. Problem 3: why it grows, and DAPO's dynamic sampling
+Generation is the most expensive part of an RL step. If 60 percent of the groups in a batch are all-correct, 60 percent of that cost produced zero gradient. As the model improves, more prompts become all-correct, so the useful part of every batch shrinks and the gradient gets noisier. DAPO adds a condition on every group it keeps:
+$$ 0\;<
+$$ \;\big|\{\,o_i : \mathrm{is\_equivalent}(a,\,o_i)\,\}\big| || NUMBER OF CORRECT ANSWERS in the group. a is the reference answer, is_equivalent is the verifier, the bars count the set.
+$$ \;<\;G || NOT ALL CORRECT. Together with 0 < this reads: at least one right and at least one wrong.
+--
+Procedure: sample groups, discard every group where all rewards are equal, keep sampling new prompts until the batch is full of mixed groups.
+Cost: more generation per step. Reported effect in DAPO: fewer training steps were needed, so total training time did not grow.
+Data-side version of the same idea (Room 18): keep only prompts whose pass rate for the current model is strictly between 0 and 1, and re-filter as the model improves.
+====
+13. Problem 4, entropy collapse: the mechanism
+Entropy (how spread out the model's next-token probabilities are: high when many tokens are plausible, near zero when one token takes almost all the probability) is what makes the G samples differ from each other.
+
+The clip stops the push on a rewarded token once its ratio reaches 1 + epsilon = 1.2. That is a limit of 20 percent of the token's OWN probability:
+ common token at 0.60:  may rise to 0.60 x 1.2 = 0.72,   a gain of 0.12
+ rare token at 0.02:    may rise to 0.02 x 1.2 = 0.024,  a gain of 0.004   (30 times less)
+
+Probabilities sum to 1, so what the common token gains is taken from the others. Step after step the common path strengthens and rare alternatives stay rare. The chain on the slide:
+ rare tokens barely grow -> common tokens keep growing -> entropy falls -> the 8 samples look alike -> no new solutions are found -> pass@k stops improving
+
+How long would the rare token need? Growing by a factor 1.2 per batch from 0.02 to 0.5 is a factor of 25:
+ number of batches = ln 25 / ln 1.2 = 3.219 / 0.182 = 17.7, so about 18 batches, and only if it is rewarded every single time.
+====
+@table 14. Problem 4: clip-higher, before and after (slide 31)
+Token after "So the answer is" | Probability at sampling | Before: limit x 1.2 | Before: gain | After: limit x 1.28 | After: gain
+"4" (the usual path) | 0.60 | 0.72 | +0.12 | 0.768 | +0.168
+"Alternatively" (rare, starts a new approach) | 0.02 | 0.024 | +0.004 | 0.0256 | +0.0056
+Batches needed to go from 0.02 to 0.5 | | ln 25 / ln 1.2 = 17.7 | about 18 | ln 25 / ln 1.28 = 13.0 | about 13
+====
+@math 15. Problem 4: the formula before and after
+Before (GRPO), one epsilon for both sides:
+$ \mathrm{clip}\big(r_{i,t}(\theta),\;1-\epsilon,\;1+\epsilon\big),\qquad \epsilon=0.2
+After (DAPO clip-higher), two separate values, which is the "decoupled clip" in DAPO's name:
+$ \mathrm{clip}\big(r_{i,t}(\theta),\;1-\varepsilon_{low},\;1+\varepsilon_{high}\big),\qquad \varepsilon_{low}=0.2,\;\;\varepsilon_{high}=0.28
+Only the upper limit moves. The upper limit acts on tokens with positive advantage, so rewarded rare tokens get more room.
+The lower limit stays at 0.8. DAPO's reason: a larger epsilon_low would let penalised tokens be pushed toward probability 0, which shrinks the set of tokens the model can ever sample again.
+Caveat from the slide notes: the clip is a soft limit. One gradient step can overshoot it, and all tokens share the same weights.
+Other remedies for the same problem (Room 11): CISPO, which never sets a token's gradient to zero, and Clip-Cov / KL-Cov.
+====
+16. Problem 5, noisy token ratios: the mechanism
+GRPO computes one ratio for every token and clips each one separately. Slide 32's example: an answer of 500 tokens. 499 tokens have ratio about 1.0. One token went from probability 0.30 to 0.90:
+ its ratio = 0.90 / 0.30 = 3.0, far outside the range 0.8 to 1.2.
+Depending on the sign of the advantage, that token's push is either cut off completely or enters the loss as one very large term. A few such tokens per batch make the gradient jump from step to step.
+
+MoE, mixture of experts (a model whose layers contain several sub-networks, with a router that picks which ones process each token), makes it worse. A small weight update can change the router's choice for a token, and then that token's probability jumps although the model as a whole barely changed.
+====
+@anat2 17. Problem 5: GSPO's one ratio per answer
+GSPO, group sequence policy optimisation, replaces the per-token ratio by a single ratio for the whole answer and clips the answer as one unit.
+$$ s_i(\theta)\;=\; || SEQUENCE RATIO of answer i. One number per answer. It takes the place of r_(i,t)(theta) for every token of that answer.
+$$ \Big(\dfrac{\pi_\theta(o_i\mid q)}{\pi_{\theta_{old}}(o_i\mid q)}\Big) || RATIO OF WHOLE-ANSWER PROBABILITIES. The probability of an answer is the product of its token probabilities, so this is the product of all the token ratios.
+$$ ^{\,1/|o_i|} || LENGTH NORMALISATION. The |o_i|-th root. It turns the product into a geometric mean, so answers of different length have ratios on the same scale near 1.
+$$ \;=\;\exp\Big(\dfrac{1}{|o_i|}\sum_{t=1}^{|o_i|}\log r_{i,t}(\theta)\Big) || SAME THING IN LOGS. The exponential of the average log token ratio. This is how it is computed.
+--
+Slide numbers: 499 ratios of 1.0 and one of 3.0. Product = 3.0. s_i = 3.0^(1/500) = exp(ln 3 / 500) = exp(0.0022) = 1.002. The outlier that broke the per-token clip moves the sequence ratio by 0.2 percent.
+Cost: the answer is accepted or clipped as a whole, so GSPO cannot treat one bad token differently from its neighbours. SAPO (Room 11) down-weights only the extreme tokens with a smooth gate.
+====
+@table 18. Problem 6, truncation noise (slide 33): maximum length 4,096 tokens, G = 4
+Answer | What happened | Reward | r - mean (mean = 0.5) | Advantage
+1 | correct in 800 tokens | 1 | +0.5 | +1
+2 | correct in 1,200 tokens | 1 | +0.5 | +1
+3 | wrong answer | 0 | -0.5 | -1
+4 | careful, correct reasoning, cut off at 4,096 tokens just before the final answer | 0 | -0.5 | -1
+Reading | | | | answer 4 is punished exactly like answer 3, although its reasoning was right
+====
+@anat2 19. Problem 6: DAPO's overlong reward shaping
+Two parts. First, overlong filtering: an answer that hit the limit is masked out of the loss, so it is neither rewarded nor punished. Second, a soft length penalty added to the reward, which grows gradually inside a buffer zone before the limit:
+$$ R_{length}(y)= || LENGTH PENALTY for answer y. Added to the correctness reward.
+$$ \;0\;\;\text{if}\;|y|\le L_{max}-L_{cache}; || FREE ZONE. |y| is the answer length in tokens. Below the buffer there is no penalty.
+$$ \quad\dfrac{(L_{max}-L_{cache})-|y|}{L_{cache}}\;\;\text{inside the buffer}; || BUFFER ZONE. A straight line from 0 at the start of the buffer down to -1 at the limit. L_cache is the width of the buffer.
+$$ \quad -1\;\;\text{if}\;|y|>L_{max} || OVER THE LIMIT. Full penalty of -1. L_max is the maximum generation length.
+--
+DAPO's own values: L_max = 20,480 and L_cache = 4,096, so the buffer starts at 16,384.
+ |y| = 12,000:  below 16,384, penalty 0
+ |y| = 18,432:  (16,384 - 18,432) / 4,096 = -0.5
+ |y| = 20,480:  (16,384 - 20,480) / 4,096 = -1.0
+The model is told smoothly to finish within budget, with no cliff at the limit. In the TRL library the filtering part is the option mask_truncated_completions=True.
+
+Slide question: why not just raise the maximum length?
+It helps, but generation time is set by the longest answer in the batch, so every extra thousand tokens costs compute on every step. DeepScaleR raised the limit in stages instead: 8k, then 16k, then 24k.
+====
+@anat3 20. The DAPO objective (slide 35), with every change from GRPO marked
+DAPO stands for Decoupled Clip and Dynamic sAmpling Policy Optimisation (ByteDance Seed and Tsinghua, 2025).
+$$ \mathcal{J}_{DAPO}(\theta)=\mathbb{E}\Big[
+$$ \dfrac{1}{\sum_{i=1}^{G}|o_i|}\sum_{i=1}^{G}\sum_{t=1}^{|o_i|} || CHANGE 1, TOKEN-LEVEL LOSS. One division by the total number of tokens in the group, in place of 1/G and 1/|o_i|. Every token counts equally. Fixes problem 1.
+$$ \min\Big(r_{i,t}(\theta)\hat{A}_{i,t},\;\mathrm{clip}\big(r_{i,t}(\theta),
+$$ \;1-\varepsilon_{low},\,1+\varepsilon_{high}\big) || CHANGE 2, CLIP-HIGHER. Two clip values, 0.2 below and 0.28 above. Fixes problem 4.
+$$ \hat{A}_{i,t}\Big)\Big]
+$$ \quad\text{s.t.}\;\;0<\big|\{o_i:\mathrm{is\_equivalent}(a,o_i)\}\big|<G || CHANGE 3, DYNAMIC SAMPLING. s.t. means subject to. Only groups with at least one right and one wrong answer are used. Fixes problem 3.
+--
+Change 4, overlong shaping, is in the reward and so does not appear in this formula. There is also no KL term: beta = 0.
+The advantage keeps GRPO's form, (R_i - mean) / std. DAPO does not address problem 2.
+====
+@table 21. What each DAPO change added (DAPO paper, Table 1)
+Configuration (Qwen2.5-32B base) | AIME 2024, average of 32 runs | Gain over the row above
+Plain GRPO | 30 |
++ overlong filtering | 36 | +6
++ clip-higher | 38 | +2
++ soft overlong punishment | 41 | +3
++ token-level loss | 42 | +1
++ dynamic sampling (this is DAPO) | 50 | +8
+DeepSeek R1-Zero-Qwen-32B, for comparison | 47 | DAPO reached 50 in about half the training steps
+====
+@table 22. Three ways to compute the advantage (slide 36)
+Method | Advantage formula | What it removes or adds | Result
+GRPO | (r_i - mean) / std | baseline plus per-prompt scaling | difficulty bias
+Dr. GRPO | r_i - mean, and a constant in place of 1 / len(o_i) | removes std and length normalisation | same accuracy, wrong answers stop growing
+RLOO, REINFORCE leave-one-out | r_i - mean of the OTHER G - 1 answers | baseline that does not contain the answer itself, so it is unbiased | equals (r_i - mean) x G / (G - 1)
+REINFORCE++ | (r_i - mean) / std of the whole batch, per-token KL folded into the reward | one common scale for all prompts | more robust when G is small or rewards are noisy
+====
+23. Checking the RLOO identity with numbers
+Rewards 1, 0, 0, 0, so G = 4.
+ Leave-one-out for answer 1: mean of the others = (0 + 0 + 0) / 3 = 0, advantage = 1 - 0 = 1.
+ Dr. GRPO for answer 1: mean of all = 0.25, advantage = 1 - 0.25 = 0.75.
+ 0.75 x G / (G - 1) = 0.75 x 4 / 3 = 1.   The two agree up to the constant factor 4/3.
+ Leave-one-out for answer 2: mean of the others = (1 + 0 + 0) / 3 = 0.333, advantage = -0.333.
+ Dr. GRPO for answer 2: 0 - 0.25 = -0.25, and -0.25 x 4 / 3 = -0.333.
+A constant factor only rescales the learning rate, so Dr. GRPO and RLOO are the same method in practice.
+
+Also reported in the Dr. GRPO paper: base models, including DeepSeek-V3-Base, already show the "aha" style of self-correction before any RL. RL makes that behaviour more frequent; it did not create it.
+
+What "we used GRPO" means in a 2025 or 2026 paper: usually GRPO with a token-level loss, clip-higher or CISPO-style clipping, all-equal groups dropped, no std division, and no KL term.
+====
+@qa 24. The eight questions, answered
+Q1 Which term causes each problem?
+A: 1: 1/|o_i|. 2: division by std. 3: reward minus mean is zero. 4: upper clip. 5: per-token ratio. 6: reward 0 at the length limit.
+Q2 Why does dividing by the answer's own length reward rambling when wrong?
+A: Push per token = advantage / length. At advantage -1, 10 tokens get -0.10 each and 100 tokens get -0.01 each.
+Q3 Why does dividing by std favour near-unanimous prompts?
+A: A small std makes a small difference large. 7 right and 1 wrong: the wrong answer gets -2.65, against -1 in a half-right group.
+Q4 What is wasted on all-equal groups, and how is it avoided?
+A: Their whole generation cost. Useful share = 1 - p^G - (1-p)^G. DAPO drops such groups and resamples.
+Q5 Why can a rare token not grow, and what does clip-higher change?
+A: The limit is 20 percent of its own probability: 0.02 can reach only 0.024. Raising the upper limit to 1.28 cuts the batches needed from about 18 to about 13.
+Q6 Why is one ratio per answer steadier?
+A: It is the geometric mean of the token ratios. One ratio of 3.0 among 500 tokens gives 1.002.
+Q7 Why is a cut-off answer a noisy signal?
+A: Its reward of 0 says nothing about whether the reasoning was right. DAPO masks it and adds a gradual penalty near the limit.
+Q8 What does DAPO change, and what did each change add on AIME 2024?
+A: Overlong filtering +6, clip-higher +2, soft overlong punishment +3, token-level loss +1, dynamic sampling +8: from 30 to 50.

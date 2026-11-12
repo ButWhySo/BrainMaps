@@ -1,0 +1,20 @@
+{
+  "name": "brainmaps",
+  "plugins": [
+    {
+      "name": "brainmaps",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "interface": {
+        "displayName": "BrainMaps",
+        "shortDescription": "Editable visual study maps"
+      }
+    }
+  ]
+}

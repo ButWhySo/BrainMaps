@@ -1,0 +1,15 @@
+{
+  "name": "brainmaps",
+  "owner": {
+    "name": "ButWhySo",
+    "url": "https://github.com/ButWhySo"
+  },
+  "plugins": [
+    {
+      "name": "brainmaps",
+      "source": "./",
+      "description": "Create editable Excalidraw mind maps and source-faithful study boards with diagrams, annotated formulas, and worked examples."
+    }
+  ],
+  "description": "BrainMaps visual study boards for Claude Code."
+}

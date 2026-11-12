@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "brainmaps",
+  "version": "1.1.0",
+  "description": "Create editable Excalidraw mind maps and source-faithful study boards with diagrams, annotated formulas, and worked examples.",
+  "author": {
+    "name": "ButWhySo",
+    "url": "https://github.com/ButWhySo"
+  },
+  "homepage": "https://github.com/ButWhySo/BrainMaps",
+  "repository": "https://github.com/ButWhySo/BrainMaps",
+  "license": "GPL-2.0-only"
+}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "BrainMaps"
+  short_description: "Build visual, editable Excalidraw study boards"
+  default_prompt: "Use $brainmaps to create a complete source-faithful Excalidraw study board with diagrams, formulas, worked examples, and the reference gallery's visual style."
+policy:
+  allow_implicit_invocation: true
