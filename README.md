@@ -26,7 +26,13 @@ Worked examples show the rule, the numbers, the calculation, and the consequence
 
 ![Worked GRPO example explaining response-length bias and its correction](skills/brainmaps/reference/style-gallery/G2-worked-problem-note-room10.png)
 
-## Install in Codex
+## Install from GitHub
+
+BrainMaps is distributed directly from this GitHub repository through its own marketplace catalogs. It has not been submitted to the official OpenAI or Anthropic plugin directories. Adding the repository as a marketplace lets your CLI discover and install BrainMaps without a central-directory listing.
+
+Both GitHub installation routes below were verified with the CLIs in isolated configurations. This confirms installation and skill discovery; it does not replace trying the skill with your own material in a new agent session.
+
+### Codex
 
 Run these commands in your terminal with a current Codex CLI:
 
@@ -37,7 +43,7 @@ codex plugin add brainmaps@brainmaps
 
 Start a new Codex session and invoke `$brainmaps`, or ask Codex to use BrainMaps with your source files.
 
-## Install in Claude Code
+### Claude Code
 
 Run these commands in your terminal:
 
@@ -47,6 +53,31 @@ claude plugin install brainmaps@brainmaps
 ```
 
 Alternatively, run `/plugin install brainmaps --marketplace ButWhySo/BrainMaps` inside Claude Code. Start a new session and invoke `/brainmaps:brainmaps`.
+
+### Install from a Git clone
+
+If you prefer a local checkout, clone the repository and register that folder with your chosen CLI:
+
+```sh
+git clone https://github.com/ButWhySo/BrainMaps.git
+cd BrainMaps
+```
+
+For Codex, run:
+
+```sh
+codex plugin marketplace add ./
+codex plugin add brainmaps@brainmaps
+```
+
+For Claude Code, run:
+
+```sh
+claude plugin marketplace add ./
+claude plugin install brainmaps@brainmaps
+```
+
+Choose either the GitHub route or the local checkout route. See [INSTALL.md](INSTALL.md) if you prefer to copy the standalone skill instead.
 
 ## Set up the Python tools
 
