@@ -75,6 +75,10 @@ See [INSTALL.md](INSTALL.md) for local plugin testing, standalone skill installa
 
 Installation guidance was checked on November 12, 2026 against the official [OpenAI plugin packaging documentation](https://developers.openai.com/plugins/build/plugins), [Codex CLI commands](https://learn.chatgpt.com/docs/developer-commands), [Claude Code manifest reference](https://code.claude.com/docs/en/plugins-reference), and [Claude marketplace documentation](https://code.claude.com/docs/en/plugin-marketplaces).
 
+## Acknowledgments
+
+BrainMaps was inspired by [parv141206](https://github.com/parv141206/), whose Excalidraw mind maps and summaries helped shape the visual approach behind its diagrams and study boards. Thank you for the inspiration.
+
 ## License
 
 The code and skill are distributed under the [GNU GPL version 2](LICENSE). Embedded third-party figures and reference screenshots retain their original rights and attribution; the code license does not grant additional rights to those materials.
