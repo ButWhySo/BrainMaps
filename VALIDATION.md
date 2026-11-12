@@ -4,7 +4,7 @@ Checked on November 12, 2026 on Windows with Codex CLI 0.166.0, Claude Code 2.1.
 
 ## Installation
 
-Using temporary CODEX_HOME and CLAUDE_CONFIG_DIR directories, registered the local marketplace and installed brainmaps@brainmaps in each CLI. Codex reported version 1.1.0 installed and enabled. Claude Code reported version 1.1.0 and discovered exactly one skill, brainmaps, with no agents, hooks, MCP servers, or LSP servers. Both Claude manifest and marketplace passed strict validation. The optional directory-listing check notes that no icon is supplied; public-directory submission was not performed.
+Using temporary CODEX_HOME and CLAUDE_CONFIG_DIR directories, registered the local marketplace and installed brainmaps@brainmaps in each CLI. Codex reported version 1.1.0 installed and enabled. Claude Code reported version 1.1.0 and discovered exactly one skill, brainmaps, with no agents, hooks, MCP servers, or LSP servers. Fresh GitHub-backed marketplace registration and installation using `ButWhySo/BrainMaps` also succeeded in both CLIs after publishing, with Claude again discovering the brainmaps skill. Both Claude manifest and marketplace passed strict validation. The optional directory-listing check notes that no icon is supplied; public-directory submission was not performed.
 
 The skill install checker passed. All 17 reference PNGs decoded successfully, all packaged Python files compiled, JSON files parsed, and local README links resolved. Installation does not prove execution in an authenticated agent conversation; no model-driven source-to-board session or graphical render review was performed.
 
